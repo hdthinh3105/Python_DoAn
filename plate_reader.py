@@ -2,14 +2,11 @@ import tkinter as tk
 from tkinter import messagebox, filedialog
 import cv2
 import easyocr
-import numpy as np
 from PIL import Image, ImageTk
-from sklearn.svm import SVC
 
 class LicensePlateDetector:
     def __init__(self, root):
         self.reader = easyocr.Reader(['en'], gpu=True)
-        self.svm = self.train_svm()
 
         self.root = root
         self.root.title("Nhận diện biển số xe")
@@ -25,25 +22,6 @@ class LicensePlateDetector:
         self.enhance_count = 0  # Thêm biến theo dõi số lần tăng độ phân giải
         self.setup_ui()
         self.max_plate_confidence = 0  # Khởi tạo độ tin cậy cao nhất
-
-    def train_svm(self):
-        # Dữ liệu giả lập huấn luyện
-        X = np.array([
-            [150, 50, 3.0, 7500],  # Biển số ô tô
-            [120, 40, 3.0, 4800],  # Biển số xe máy
-            [100, 30, 3.33, 3000],  # Xe máy
-            [200, 60, 3.33, 12000],  # Ô tô
-            [300, 100, 3.0, 30000],  # Ô tô lớn
-            [80, 25, 3.2, 2000],  # Xe máy
-            [250, 75, 3.3, 18750],  # Ô tô
-            [180, 50, 3.6, 9000],  # Xe máy phân khối lớn
-            [320, 90, 3.5, 28800],  # Ô tô SUV
-        ])
-        y = np.array([1, 0, 0, 1, 1, 0, 1, 0, 1])  # 1 = Ô tô, 0 = Xe máy
-
-        svm = SVC(kernel='rbf', probability=True, C=1.0, gamma='scale')
-        svm.fit(X, y)
-        return svm
 
     def setup_ui(self):
         title_label = tk.Label(
@@ -193,8 +171,13 @@ class LicensePlateDetector:
     def detect_license_plate(self, image):
         # Tiền xử lý ảnh
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        self.display_intermediate_image(gray, "Gray Image")
+
         gray = cv2.bilateralFilter(gray, 11, 17, 17)
+        self.display_intermediate_image(gray, "Filtered Image")
+
         edges = cv2.Canny(gray, 170, 200)
+        self.display_intermediate_image(edges, "Edges")
 
         # Phát hiện các đường viền (contour)
         contours, _ = cv2.findContours(edges.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -210,6 +193,8 @@ class LicensePlateDetector:
                 if 1 <= aspect_ratio <= 6 and w > 50 and h > 15:  # Điều kiện lọc biển số
                     plate_region = image[y:y + h, x:x + w]
                     detected_regions.append((plate_region, (x, y, w, h)))
+
+        self.display_intermediate_image(image, "Detected Region")
 
         # OCR nhận diện biển số
         plate_text = ""
@@ -227,34 +212,65 @@ class LicensePlateDetector:
                     plate_confidence = max(results, key=lambda x: x[2])[2]  # Độ tin cậy của OCR
 
                     if plate_confidence > 0.5:
+                        # Lưu lại vùng có độ tin cậy cao nhất
                         best_region = (x, y, w, h)
 
-                        # Sử dụng SVM dự đoán loại xe
-                        features = np.array([w, h, w / h, w * h]).reshape(1, -1)
-                        prediction = self.svm.predict(features)
-                        vehicle_type = "Ô tô" if prediction == 1 else "Xe máy"
-
-                        # Độ tin cậy của loại xe dựa trên khả năng của SVM
-                        vehicle_confidence = self.svm.predict_proba(features)[0][1] if prediction == 1 else \
-                            self.svm.predict_proba(features)[0][0]
+                        # Sử dụng tỷ lệ chiều rộng/chiều cao để phân loại xe
+                        if w / h > 2:  # Nếu tỷ lệ chiều ngang/chiều cao lớn hơn 2, là ô tô
+                            vehicle_type = "Ô tô"
+                            vehicle_confidence = 1.0  # Độ tin cậy của ô tô
+                        else:  # Nếu tỷ lệ nhỏ hơn hoặc bằng 2, là xe máy
+                            vehicle_type = "Xe máy"
+                            vehicle_confidence = 1.0  # Độ tin cậy của xe máy
 
                         break  # Dừng khi nhận diện được biển số
             except Exception as e:
                 print(f"OCR Error: {e}")
 
-        # Vẽ khung biển số nếu tìm thấy
+        # Xóa tất cả các khung không phải là của biển số có độ tin cậy cao nhất
         if best_region:
             x, y, w, h = best_region
+            # Vẽ khung của biển số có độ tin cậy cao nhất
             cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 3)
+
+        self.display_intermediate_image(image, "Final Result")
 
         return image, plate_text, vehicle_type, plate_confidence, vehicle_confidence
 
-    def enhance_image(self, image):
-        scale_factor = 2  # Tăng kích thước gấp 2 lần
-        width = int(image.shape[1] * scale_factor)
-        height = int(image.shape[0] * scale_factor)
-        resized_image = cv2.resize(image, (width, height), interpolation=cv2.INTER_CUBIC)
-        return resized_image
+    def display_intermediate_image(self, image, title):
+        """Hiển thị ảnh ở mỗi bước xử lý trong cửa sổ riêng."""
+        # Chuyển đổi ảnh sang RGB nếu cần
+        if len(image.shape) == 2:  # Nếu là ảnh grayscale
+            display_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        else:
+            display_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        # Resize ảnh để hiển thị
+        height, width = display_image.shape[:2]
+        max_size = 400
+        if width > max_size or height > max_size:
+            scale = max_size / max(width, height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            display_image = cv2.resize(display_image, (new_width, new_height))
+
+        img_pil = Image.fromarray(display_image)
+        img_tk = ImageTk.PhotoImage(image=img_pil)
+
+        # Tạo cửa sổ mới nếu chưa có
+        window_name = f"intermediate_window_{title}"
+        if not hasattr(self, window_name):
+            window = tk.Toplevel(self.root)
+            window.title(title)
+            label = tk.Label(window)
+            label.pack()
+            setattr(self, window_name, window)
+            setattr(self, f"{window_name}_label", label)
+
+        # Cập nhật ảnh
+        label = getattr(self, f"{window_name}_label")
+        label.img_tk = img_tk
+        label.config(image=img_tk)
 
     def display_result(self, image, plate_text, vehicle_type, plate_confidence, vehicle_confidence):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -266,7 +282,7 @@ class LicensePlateDetector:
         self.label.config(image=img_tk)
 
         self.plate_text_label.config(text=f"Biển số: {plate_text.upper()} (Độ tin cậy: {plate_confidence:.2f})")
-        self.vehicle_type_label.config(text=f"Loại xe: {vehicle_type.upper()} (Độ tin cậy: {vehicle_confidence:.2f})")
+        self.vehicle_type_label.config(text=f"Loại xe: {vehicle_type.upper()}")
 
     def pause_video(self):
         self.is_paused = True  # Tạm dừng video khi nhấn nút
